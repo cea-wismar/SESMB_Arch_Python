@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>SESViewEl</title>
+    <link rel="stylesheet" href="./index.css">
+  </head>
+  <body>
+    <p><center><h3>SESViewEl - System Entity Structure View in Node.js / Electron</h3></center></p>
+    <p align="right">A socket server is started on port 54545. SESToPy can connect to this server now. Save received string as XML file? <input type="checkbox" id="srs" name="srs" checked> - Exit the program here: <input name="exit" id="exit" type="button" size="20" value="Exit"></p>
+
+    <!--
+    We are using Node.js <script>document.write(process.versions.node)</script>,
+    Chromium <script>document.write(process.versions.chrome)</script>,
+    and Electron <script>document.write(process.versions.electron)</script>.
+    -->
+
+    <table style="display: inline-block"; border=0>
+      <tbody>
+        <tr valign="top">
+          <td><label for="wico">Tree without Icons?</label><input type="checkbox" id="wico" name="wico" onclick="presTree();"></td>
+          <td><input name="Save Tree as SVG" id="savetree" type="button" size="20" value="Save Tree as SVG" onclick="saveTree();"></td>
+          <td><div style="display:inline-block;" id="saveinfo"></div></td>
+        </tr>
+        <tr valign="top">
+          <td align="right">Choose Font Size/Weight for the Tree:</td>
+          <td align="left"><select id="fontsize" onclick="presTree();"></select><select id="fontweight" onclick="presTree();"><option value="normal">normal</option><option value="bold">bold</option></select></td>
+          <td>Nodename [left]/[right] of icon: Node [has]/[has no] subtree.</td>
+        </tr>
+        <tr valign="top">
+          <td><div style="display:inline-block;" id="globals"></div></td>
+          <td><input name="Show/Hide Node Attributes" id="showhidenodeattrib" type="button" size="20" value="Show/Hide Node Attributes" onclick="showNodeSpecAttrib();"></td>
+          <td><div style="display:inline-block;" id="nodeSpecificAttributes"></div></td>
+        </tr>
+      </tbody>
+    </table>
+    <div id="chart" align="center"></div>
+  </body>
+
+  <script>
+    //requires for this file
+    //module provides an asynchronous network API
+    var net = require('net');
+    //module for the creation of an application
+    const remote = require('electron').remote;
+    //module for the libraries for printing the graph
+    var d3 = require("d3");
+    //script for creating d3 trees from the XML
+    var conv = require('./xml_converter');
+    //script for the presentation of the graph
+    var presenter  = require('./presentation')
+    //for saving
+    var fs = require('fs');
+
+    //event listener on exit button
+    document.querySelector('#exit').addEventListener('click', exitFun);
+
+    //start the server
+    server();
+
+    //set global variables
+    var show_allAttribString = "";
+    var nodesSpecAttribShown = false;
+    var nSA = [];
+    var treeDat = [];
+    var selcons = [];
+
+    //prepare d3
+    var [margin, width, height, svg, div, treemap] = presd3(false);
+
+    //--------------------------------------------------------------------
+
+    //window resize event -> recalculate presentation of the node specific attributes
+    window.addEventListener('resize', function(e){
+      e.preventDefault();
+      presNodeSpecAttr(nSA);
+      //recalculate tree size according to window size
+      [margin, width, height, svg, div, treemap] = presd3(true);
+      //do not execute on startup -> present recalculated tree size on resize window
+      if (!isEmpty(treeDat)) {
+        presTree();
+      }
+    })
+
+    var isEmpty = function(obj) {
+      return Object.keys(obj).length === 0;
+    }
+
+    //--------------------------------------------------------------------
+
+    //presentation with d3
+    function presd3(resizeevent) {
+      //get window size
+      var windowSize = remote.getCurrentWindow().webContents.getOwnerBrowserWindow().getBounds();
+
+      //set the dimensions and margins of the diagram
+      var margin = {top: 60, right: 60, bottom: 30, left: 60},
+          width  = windowSize.width - margin.left - margin.right,
+          height = windowSize.height - margin.top - margin.bottom;
+
+      //get the chart HTML element
+      var chart = d3.select("#chart");
+
+      //append the svg object to the #chart area of the page
+      //appends a 'group' element to 'svg'
+      //moves the 'group' element to the top left margin
+      var svg = chart.append("svg")     //d3.select("body").append(... would place the svg somewhere on the body of the page
+                  .attr("width", width + margin.right + margin.left)
+                  .attr("height", height + margin.top + margin.bottom)
+                  .append("g")
+                  .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      var div = chart.append("div")   //if for the svg element "#chart" is replaced by "body" (see comment above), here "#chart must be replaced by "body" as well
+                  .attr("class", "tooltip")
+                  .style("display", "none");
+
+      //remove svg element and div element when the graph is redrawn (after resize event)
+      if (resizeevent) {
+        chart.select("svg").remove();
+        chart.select("div").remove();
+      }
+
+      // declares a tree layout and assigns the size
+      var treemap = d3.tree().size([width, height]);
+      //w and h are turned, since the presentation is turned
+
+      return [margin, width, height, svg, div, treemap];
+    }
+
+    //--------------------------------------------------------------------
+
+    //populate selectfield for the font size
+    var sel = document.getElementById("fontsize");
+    for (var i=5; i<26; i++) {
+      var opt = document.createElement("option");
+      opt.value = i
+      opt.innerHTML = i.toString();
+      sel.appendChild(opt);
+    }
+    sel.selectedIndex = "9";
+
+    //presentation of the globals
+    function presGlob(sesvars, semcons) {
+      var show_globals = [];
+      show_globals.push('<table style="display: inline-block"; border=1>');
+      //show_globals.push('<table style="float: left"; border=1>');
+        show_globals.push('<thead>');
+          show_globals.push('<tr><th align=left bgcolor=#AAAAAA>SES variables</th><th align=left bgcolor=#AAAAAA>semantic conditions</th></tr>');
+        show_globals.push('</thead>');
+        show_globals.push('<tbody>');
+          show_globals.push('<tr><td bgcolor=#AAAAAA>' + sesvars + '</td><td bgcolor=#AAAAAA>' + semcons +'</td></tr>');
+        show_globals.push('</tbody>');
+      show_globals.push('</table>');
+
+      var show_globalsString = "";
+      for (var i=0; i<show_globals.length; i++) {
+        show_globalsString = show_globalsString + show_globals[i];
+      }
+
+      var globEl = document.getElementById("globals");
+      globEl.innerHTML = show_globalsString;
+    }
+
+    //presentation of the node specific attributes
+    function presNodeSpecAttr(nodeSpecificAttributes) {
+      //write in global variable -> make a copy
+      nSA = JSON.parse(JSON.stringify(nodeSpecificAttributes));
+      show_allAttribString = "";
+
+      //prepare -> <br /> to new array entry
+      for (var i=0; i<nodeSpecificAttributes.length; i++) {
+        nodeSpecificAttributes[i][1] = nodeSpecificAttributes[i][1].split("<br />");
+        nodeSpecificAttributes[i][1].splice(-1,1);
+      }
+
+      //get the window size
+      var windowSize = remote.getCurrentWindow().webContents.getOwnerBrowserWindow().getBounds();
+      var width = windowSize.width;
+
+      //get the longest entry and the number of entries
+      var longestEntry = 0;
+      var numEntries = 0;
+      for (var i=0; i<nodeSpecificAttributes.length; i++) {
+        var nlen = nodeSpecificAttributes[i][0].length;        
+        numEntries = numEntries + nodeSpecificAttributes[i][1].length;
+        for (var j=0; j<nodeSpecificAttributes[i][1].length; j++) {
+          var elen = nodeSpecificAttributes[i][1][j].length;
+          if (nlen + elen > longestEntry) {
+            longestEntry = nlen + elen + 15;  //15 for the table and the space
+          }
+        }
+      }
+
+      //decide how many tables and how many attributes per table
+      var numTablesFit = Math.floor(width / (longestEntry * 8));  //8 because one letter is not one pixel
+      var attributesPerTable = Math.ceil(numEntries / numTablesFit);
+
+      //now create the tables
+      var tables = [];
+      var table = [];
+      var tabl = [];
+      var entryCount = 0;
+      for (var i=0; i<nodeSpecificAttributes.length; i++) {
+        if (entryCount < attributesPerTable) {
+          tabl.push(nodeSpecificAttributes[i][0]);
+          for (var j=0; j<nodeSpecificAttributes[i][1].length; j++) {
+            tabl.push(nodeSpecificAttributes[i][1][j]);
+            entryCount += 1;
+          }
+          table.push(tabl);
+          tabl = [];
+        } else {
+          tables.push(table);
+          table = [];
+          entryCount = 0;
+          i--;
+        }
+      }
+      if (table.length > 0) {
+        tables.push(table);
+      }
+      
+      //build the HTML code for the tables
+      var show_allAttrib = [];
+
+      show_allAttrib.push('<table style="display: inline-block"; border=0>');
+        show_allAttrib.push('<tbody>');
+          show_allAttrib.push('<tr valign="top">');
+
+            for (var i=0; i<tables.length; i++) {
+              show_allAttrib.push('<td>');
+              
+              var show_attrib = [];
+              show_attrib.push('<table style="display: inline-block"; border=1>');    //show_attrib.push('<table style="float: left"; border=1>');
+                show_attrib.push('<thead>');
+                  show_attrib.push('<tr><th align=left bgcolor=#EEEEEE>Nodename</th><th align=left bgcolor=#EEEEEE>Attributes</th></tr>');
+                show_attrib.push('</thead>');
+                for (var j=0; j<tables[i].length; j++) {
+                  show_attrib.push('<tbody>');
+                    var attrstring = "";
+                    for (var k=1; k<tables[i][j].length; k++) {
+                      if (attrstring != "") {
+                        attrstring = attrstring + "<br />" + tables[i][j][k];
+                      } else {
+                        attrstring = tables[i][j][k];
+                      }
+                    }
+                    show_attrib.push('<tr><td bgcolor=#EEEEEE>' + tables[i][j][0] + '</td><td bgcolor=#EEEEEE>' + attrstring +'</td></tr>');
+                  show_attrib.push('</tbody>');
+                }
+              show_attrib.push('</table>');
+
+              show_allAttrib.push(show_attrib);
+              show_allAttrib.push('</td>');
+            }
+
+          show_allAttrib.push('</tr>');
+        show_allAttrib.push('</tbody>');
+      show_allAttrib.push('</table>');
+
+      var show_allAttribArray = [];
+      for (var i=0; i<show_allAttrib.length; i++) {
+        show_allAttribArray = show_allAttribArray.concat(show_allAttrib[i]);
+      }
+
+      for (var i=0; i<show_allAttribArray.length; i++) {
+        show_allAttribString = show_allAttribString + show_allAttribArray[i];
+      }
+
+      //show on UI if it shall be shown
+      if (nodesSpecAttribShown) {
+        var nsaEl = document.getElementById("nodeSpecificAttributes");
+        nsaEl.innerHTML = show_allAttribString;
+      }
+      
+    }
+
+    function showNodeSpecAttrib() {
+      if (!nodesSpecAttribShown) {
+        var nsaEl = document.getElementById("nodeSpecificAttributes");
+        nsaEl.innerHTML = show_allAttribString;
+        nodesSpecAttribShown = true;
+      } else {
+        var nsaEl = document.getElementById("nodeSpecificAttributes");
+        nsaEl.innerHTML = "";
+        nodesSpecAttribShown = false;
+      } 
+    }
+
+    //presentation of the tree
+    function presTree() {
+      var wicoval = document.getElementById('wico').checked;
+      var sizeval = document.getElementById('fontsize').value;
+      var weightval = document.getElementById('fontweight').value;
+      if (wicoval) {
+        presenter.createPicture(treeDat, true, [sizeval, weightval], selcons);
+      } else {
+        presenter.createPicture(treeDat, false, [sizeval, weightval], selcons);
+      }
+    }
+
+    //--------------------------------------------------------------------
+
+    //Get the graph as SVG string -> for saving
+    //Function from http://bl.ocks.org/Rokotyan/0556f8facbaf344507cdc45dc3622177
+    //getSVGString ( svgNode )
+    function getSVGString( svgNode ) {
+      svgNode.setAttribute('xlink', 'http://www.w3.org/1999/xlink');
+      var cssStyleText = getCSSStyles( svgNode );
+      appendCSS( cssStyleText, svgNode );
+
+      var serializer = new XMLSerializer();
+      var svgString = serializer.serializeToString(svgNode);
+      svgString = svgString.replace(/(\w+)?:?xlink=/g, 'xmlns:xlink='); // Fix root xlink without namespace
+      svgString = svgString.replace(/NS\d+:href/g, 'xlink:href'); // Safari NS namespace fix
+
+      return svgString;
+
+      function getCSSStyles( parentElement ) {
+        var selectorTextArr = [];
+
+        // Add Parent element Id and Classes to the list
+        selectorTextArr.push( '#'+parentElement.id );
+        for (var c = 0; c < parentElement.classList.length; c++)
+            if ( !contains('.'+parentElement.classList[c], selectorTextArr) )
+              selectorTextArr.push( '.'+parentElement.classList[c] );
+
+        // Add Children element Ids and Classes to the list
+        var nodes = parentElement.getElementsByTagName("*");
+        for (var i = 0; i < nodes.length; i++) {
+          var id = nodes[i].id;
+          if ( !contains('#'+id, selectorTextArr) )
+            selectorTextArr.push( '#'+id );
+
+          var classes = nodes[i].classList;
+          for (var c = 0; c < classes.length; c++)
+            if ( !contains('.'+classes[c], selectorTextArr) )
+              selectorTextArr.push( '.'+classes[c] );
+        }
+
+        // Extract CSS Rules
+        var extractedCSSText = "";
+        for (var i = 0; i < document.styleSheets.length; i++) {
+          var s = document.styleSheets[i];
+          
+          try {
+              if(!s.cssRules) continue;
+          } catch( e ) {
+                if(e.name !== 'SecurityError') throw e; // for Firefox
+                continue;
+              }
+
+          var cssRules = s.cssRules;
+          for (var r = 0; r < cssRules.length; r++) {
+            if ( contains( cssRules[r].selectorText, selectorTextArr ) )
+              extractedCSSText += cssRules[r].cssText;
+          }
+        }
+        
+
+        return extractedCSSText;
+
+        function contains(str,arr) {
+          return arr.indexOf( str ) === -1 ? false : true;
+        }
+
+      }
+
+      function appendCSS( cssText, element ) {
+        var styleElement = document.createElement("style");
+        styleElement.setAttribute("type","text/css"); 
+        styleElement.innerHTML = cssText;
+        var refNode = element.hasChildNodes() ? element.children[0] : null;
+        element.insertBefore( styleElement, refNode );
+      }
+    }
+
+    function saveTree(cont) {
+      //get the graph as SVG image
+      var svgS = getSVGString(d3.select('svg').node());
+      /* -> now replaced by showing the tree without icons
+      //remove the images from the SVG string, if asked for
+      if (document.getElementById('wico').checked) {
+        var svgS = svgS.replace(/\<image.*?\>/g,'')
+      }
+      */
+      //write the file, if it is not empty
+      var sainfo = document.getElementById("saveinfo");
+      if (svgS != '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" xmlns:xlink="http://www.w3.org/1999/xlink"><style xmlns="http://www.w3.org/1999/xhtml" type="text/css"></style><g transform="translate(90,60)"/></svg>') {
+        if (svgS != '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" xmlns:xlink="http://www.w3.org/1999/xlink"><style xmlns="http://www.w3.org/1999/xhtml" type="text/css"></style><g transform="translate(90,60)"><g class="node" transform="translate(510, 0)"><text dy=".35em" x="13" text-anchor="start">no_tree</text><image xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="entity.png" x="-12px" y="-12px" width="24px" height="24px"/></g></g></svg>') {
+          fs.writeFile("tree.svg", svgS, function(err) {
+            if(err) {
+              return console.log(err);
+              sainfo.innerHTML = "Not saved, error!";
+            }
+            sainfo.innerHTML = "The file 'tree.svg' was written in the program directory.";
+          });
+        } else {
+          sainfo.innerHTML = "Not saved, empty tree!";
+        }
+      } else {
+        sainfo.innerHTML = "Not saved, empty tree!";
+      }
+    }
+
+    //--------------------------------------------------------------------
+
+    function server() {
+      // Keep track of the clients
+      var clients = [];
+
+      // Start a TCP Server
+      net.createServer(function (socket) {
+
+        // Identify this client
+        socket.name = socket.remoteAddress + ":" + socket.remotePort;
+
+        // Put this new client in the list
+        clients.push(socket);
+
+        // Handle incoming messages from clients.
+        socket.on('data', function (data) {
+          //read question and create reply
+          var rcvstring = new TextDecoder("utf8").decode(data);  //decode
+          //save rcvstring as file
+          var srsval = document.getElementById('srs').checked;
+          if (srsval) {
+            fs.writeFile("received_XML_string.xml", rcvstring, function(err) {
+              if(err) {
+                return console.log(err);
+              }
+            });
+          }
+          //execute xml tree to d3 tree conversion
+          var retval = conv.treeData(rcvstring);
+          treeDat = retval[0];
+          var sesvars = retval[1];
+          var semcons = retval[2];
+          selcons = retval[3]; 
+          var nodeSpecificAttributes = retval[4];
+          //execute script for presentation
+          presTree();
+          //execute function for presentation of the globals
+          presGlob(sesvars, semcons);
+          //execute function for presentation of the node specific attributes
+          presNodeSpecAttr(nodeSpecificAttributes);
+          
+          //reset saveinfo
+          var sainfo = document.getElementById("saveinfo");
+          sainfo.innerHTML = "";
+        });
+
+        // Remove the client from the list when it leaves
+        socket.on('end', function () {
+          clients.splice(clients.indexOf(socket), 1);
+        });
+
+      }).listen(54545);
+    }
+
+    function exitFun() {
+        const remote = require('electron').remote;
+        let w = remote.getCurrentWindow();
+        w.close();
+    }
+
+  </script>
+  
+</html>
